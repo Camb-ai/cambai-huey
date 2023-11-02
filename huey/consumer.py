@@ -523,11 +523,12 @@ class Consumer(object):
         self._received_signal = True
         self._restart = False
         self._graceful = True
-        if self.worker_type == WORKER_GREENLET:
-            def kill_workers():
-                gevent.killall([t for _, t in self.worker_threads],
-                               KeyboardInterrupt)
-            gevent.spawn(kill_workers)
+        # commenting this code removes the non-graceful greenlet shut down.
+        # if self.worker_type == WORKER_GREENLET:
+        #     def kill_workers():
+        #         gevent.killall([t for _, t in self.worker_threads],
+        #                        KeyboardInterrupt)
+        #     gevent.spawn(kill_workers)
 
     def _handle_restart_signal(self, sig_num, frame):
         self._logger.info('Received SIGHUP, will restart')
