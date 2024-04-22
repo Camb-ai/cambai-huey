@@ -31,6 +31,7 @@ class BaseProcess(object):
     def __init__(self, huey):
         self.huey = huey
         self._logger = self.create_logger()
+        self._huey_logger = logging.getLogger("huey") 
 
     def create_logger(self):
         return logging.getLogger('huey.consumer.%s' % self.process_name)
@@ -282,7 +283,7 @@ class Consumer(object):
         self.worker_type = worker_type  # What process model are we using?
 
         # Configure health-check and consumer main-loop attributes.
-        self._stop_flag_timeout = 0.1
+        self._stop_flag_timeout = 30
         self._health_check = check_worker_health
         self._health_check_interval = float(health_check_interval)
 
@@ -413,6 +414,7 @@ class Consumer(object):
         executing any tasks they might be currently working on.
         """
         self.stop_flag.set()
+        self._huey_logger.info(f"SHUTTING DOWN with graceful: {graceful}")
         if graceful:
             self._logger.info('Shutting down gracefully...')
             try:
@@ -422,6 +424,7 @@ class Consumer(object):
             except KeyboardInterrupt:
                 self._logger.info('Received request to shut down now.')
             else:
+                self._huey_logger.info("WORKERS STOPPED")
                 self._logger.info('All workers have stopped.')
         else:
             self._logger.info('Shutting down')
@@ -520,6 +523,7 @@ class Consumer(object):
 
     def _handle_stop_signal(self, sig_num, frame):
         self._logger.info('Received SIGTERM')
+        self._huey_logger.info('Received SIGTERM!')
         self._received_signal = True
         self._restart = False
         self._graceful = True
