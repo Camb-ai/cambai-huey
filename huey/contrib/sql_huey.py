@@ -33,6 +33,23 @@ class SqlStorage(BaseStorage):
         self.KV, self.Schedule, self.Task = self.create_models()
         self.create_tables()
 
+        # Check for FOR UPDATE SKIP LOCKED support.
+        if isinstance(self.database, PostgresqlDatabase):
+            self.for_update = 'FOR UPDATE SKIP LOCKED'
+        elif isinstance(self.database, MySQLDatabase):
+            self.for_update = 'FOR UPDATE SKIP LOCKED'  # Assume support.
+            # Try to determine if we're using MariaDB or MySQL.
+            version, = self.database.execute_sql('select version()').fetchone()
+            if 'mariadb' in str(version).lower():
+                # MariaDB added support in 10.6.0.
+                if self.database.server_version < (10, 6):
+                    self.for_update = 'FOR UPDATE'
+            elif self.database.server_version < (8, 0, 1):
+                # MySQL added support in 8.0.1.
+                self.for_update = 'FOR UPDATE'
+        else:
+            self.for_update = None
+
     def create_models(self):
         class Base(Model):
             class Meta:
@@ -96,8 +113,8 @@ class SqlStorage(BaseStorage):
         query = (self.tasks(self.Task.id, self.Task.data)
                  .order_by(self.Task.priority.desc(), self.Task.id)
                  .limit(1))
-        if self.database.for_update:
-            query = query.for_update()
+        if self.for_update:
+            query = query.for_update(self.for_update)
 
         with self.database.atomic():
             try:
@@ -122,7 +139,7 @@ class SqlStorage(BaseStorage):
     def flush_queue(self):
         self.Task.delete().where(self.Task.queue == self.name).execute()
 
-    def add_to_schedule(self, data, timestamp, utc):
+    def add_to_schedule(self, data, timestamp):
         self.check_conn()
         self.Schedule.create(queue=self.name, data=data, timestamp=timestamp)
 
@@ -131,8 +148,8 @@ class SqlStorage(BaseStorage):
         query = (self.schedule(self.Schedule.id, self.Schedule.data)
                  .where(self.Schedule.timestamp <= timestamp)
                  .tuples())
-        if self.database.for_update:
-            query = query.for_update()
+        if self.for_update:
+            query = query.for_update(self.for_update)
 
         with self.database.atomic():
             results = list(query)
@@ -150,10 +167,12 @@ class SqlStorage(BaseStorage):
     def schedule_size(self):
         return self.schedule().count()
 
-    def scheduled_items(self):
+    def scheduled_items(self, limit=None):
         tasks = (self.schedule(self.Schedule.data)
                  .order_by(self.Schedule.timestamp)
                  .tuples())
+        if limit:
+            tasks = tasks.limit(limit)
         return list(map(operator.itemgetter(0), tasks))
 
     def flush_schedule(self):
@@ -185,8 +204,8 @@ class SqlStorage(BaseStorage):
     def pop_data(self, key):
         self.check_conn()
         query = self.kv().where(self.KV.key == key)
-        if self.database.for_update:
-            query = query.for_update()
+        if self.for_update:
+            query = query.for_update(self.for_update)
 
         with self.database.atomic():
             try:
