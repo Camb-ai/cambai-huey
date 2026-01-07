@@ -3,7 +3,59 @@ Changelog
 
 ## master
 
-[View commits](https://github.com/coleifer/huey/compare/2.5.0...HEAD)
+[View commits](https://github.com/coleifer/huey/compare/2.6.0...HEAD)
+
+## 2.6.0
+
+* "Modernize" build system to use pyproject.toml and github actions.
+
+[View commits](https://github.com/coleifer/huey/compare/2.5.5...2.6.0)
+
+## 2.5.5
+
+* pypa/pypi is a joke.
+
+[View commits](https://github.com/coleifer/huey/compare/2.5.4...2.5.5)
+
+## 2.5.4
+
+* Minor bug fixes
+* Fix multiprocessing start method for python 3.14+.
+
+[View commits](https://github.com/coleifer/huey/compare/2.5.3...2.5.4)
+
+## 2.5.3
+
+This release adds the oft-requested `SIGNAL_ENQUEUED`. This signal, of
+necessity, runs **in the calling process** and not in the consumer, since tasks
+are enqueued by the application typically. The exception is tasks that are
+enqueued for retry by the consumer or tasks (including periodic tasks) enqueued
+by the scheduler.
+
+* Add support for a new `SIGNAL_ENQUEUED`.
+* Use `FOR UPDATE SKIP LOCKED` when supported by the database in the `sql_huey`
+  storage engine.
+
+[View commits](https://github.com/coleifer/huey/compare/2.5.2...2.5.3)
+
+## 2.5.2
+
+* Prevent bad task serialization in schedule from causing a batch of tasks
+  to be lost, see #815..
+* Ensure we catch ResultTimeout which may occur when used with Sentinel, #813.
+* Remove junk SQS implementation I was testing out.
+
+## 2.5.1
+
+* More makework thanks to the ass-clowns running Python. Fix issue with
+  deprecation of `datetime.utcnow()` in 3.12.
+* Add API for customizing the `TaskWrapper` implementation, suitably named
+  `get_task_wrapper_class()`.
+* Make the `revoke_all()`, `restore_all()` and `is_revoked()` more robust for
+  various input types.
+* Fix bug that could occur in the event of a SIGHUP followed by a SIGINT when
+  using thread workers.
+* Added new experimental contrib module for SQS queue and S3 result storage.
 
 ## 2.5.0
 

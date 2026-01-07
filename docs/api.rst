@@ -731,6 +731,25 @@ Huey object
 
     .. py:method:: is_revoked(task, timestamp=None)
 
+        :param task: either a task instance, a task ID, a Result, or a Task class.
+
+        This method should rarely need to be called directly. Typically you
+        should rather use the ``is_revoked`` method on the object that is being
+        revoked, for example:
+
+        .. code-block:: python
+
+            @huey.task()
+            def greet(name):
+                return 'Hello %s' % name
+
+            r = greet.schedule(delay=60, args=('Huey',))
+            r.revoke()  # Revoke this task.
+            r.is_revoked()  # True.
+
+            greet.revoke()  # Revoke ALL invocations of this task.
+            greet.is_revoked()  # True.
+
         .. seealso::
             For task instances, use :py:meth:`Result.is_revoked`.
 
@@ -756,7 +775,7 @@ Huey object
         yet. If you want to wait for the result, specify ``blocking=True``.
         This will loop, backing off up to the provided ``max_delay``, until the
         value is ready or the ``timeout`` is reached. If the ``timeout`` is
-        reached before the result is ready, a :py:class:`HueyException` will be
+        reached before the result is ready, a :py:class:`ResultTimeout` will be
         raised.
 
         .. seealso::
@@ -1208,6 +1227,19 @@ Huey object
         ``-f`` method which will flush all locks before beginning to execute
         tasks.
 
+    .. py:method:: acquire()
+
+        Acquire the lock, raising a :py:class:`TaskLockedException` if the lock
+        could not be acquired. Otherwise, returns ``True``.
+
+    .. py:method:: release()
+
+        Identical to :py:meth:`~TaskLock.clear`.
+
+    .. py:method:: locked()
+
+        :returns: boolean whether lock is currently being held.
+
 Result
 ------
 
@@ -1250,8 +1282,8 @@ Result
         Traceback (most recent call last):
           File "<stdin>", line 1, in <module>
           File "/home/charles/tmp/huey/src/huey/huey/queue.py", line 46, in get
-            raise HueyException
-        huey.exceptions.HueyException
+            raise ResultTimeout
+        huey.exceptions.ResultTimeout
 
         >>> res(blocking=True)  # No timeout, will block until it gets data.
         300
@@ -1284,6 +1316,12 @@ Result
             attempting to fetch result.
         :param bool revoke_on_timeout: if a timeout occurs, revoke the task,
             thereby preventing it from running if it is has not started yet.
+        :param bool preserve: when set to ``True``, this parameter ensures that
+            the task result will be preserved after having been successfully
+            retrieved. Ordinarily, Huey will discard results after they have
+            been read, to prevent the result store from growing without bounds.
+        :raises: ResultTimeout if blocking and timeout specified without result
+            becoming ready yet.
 
         Attempt to retrieve the return value of a task.  By default,
         :py:meth:`~Result.get` will simply check for the value, returning
@@ -1291,7 +1329,7 @@ Result
         can specify ``blocking=True``. This will loop, backing off up to the
         provided ``max_delay``, until the value is ready or the ``timeout`` is
         reached. If the ``timeout`` is reached before the result is ready, a
-        :py:class:`HueyException` exception will be raised.
+        :py:class:`ResultTimeout` exception will be raised.
 
         .. note:: Instead of calling ``.get()``, you can simply call the
             :py:class:`Result` object directly. Both methods accept the same
@@ -1411,6 +1449,11 @@ Exceptions
 
     Raised by the consumer when a task lock cannot be acquired.
 
+.. py:class:: ResultTimeout
+
+    Raised when attempting to block on a call to :py:meth:`Result.get` (for
+    instance) and the timeout is exceeded without the result being ready.
+
 .. py:class:: CancelExecution
 
     Cancel the execution of a task. Can be raised either within a
@@ -1435,6 +1478,17 @@ Exceptions
     If ``delay`` or ``eta`` is specified, then any ``retry_delay`` set on the
     task will be overridden and the value specified will be used to determine
     when the task will be retried next.
+
+    .. code-block:: python
+
+        @huey.task()
+        def fetch_api_data(url):
+            try:
+                fh = urlopen(url)
+            except HTTPError:
+                # Try again in 60 seconds for an HTTP error (500, etc).
+                raise RetryTask(delay=60)
+            ...
 
 .. py:class:: TaskException
 
