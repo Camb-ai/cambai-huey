@@ -24,8 +24,9 @@ try:
     except ImportError:
         from redis import Redis
     from redis.exceptions import ConnectionError
+    from redis.exceptions import TimeoutError
 except ImportError:
-    ConnectionPool = Redis = ConnectionError = None
+    ConnectionPool = Redis = ConnectionError = TimeoutError = None
 
 from huey.constants import EmptyData
 from huey.exceptions import ConfigurationError
@@ -100,14 +101,13 @@ class BaseStorage(object):
         """
         raise NotImplementedError
 
-    def add_to_schedule(self, data, ts, utc):
+    def add_to_schedule(self, data, ts):
         """
         Add the given task data to the schedule, to be executed at the given
         timestamp.
 
         :param bytes data: Task data.
         :param datetime ts: Timestamp at which task should be executed.
-        :param bool utc: Whether huey is in UTC-mode or local mode.
         :return: No return value.
         """
         raise NotImplementedError
@@ -247,7 +247,7 @@ class BlackHoleStorage(BaseStorage):
     def queue_size(self): return 0
     def enqueued_items(self, limit=None): return []
     def flush_queue(self): pass
-    def add_to_schedule(self, data, ts, utc): pass
+    def add_to_schedule(self, data, ts): pass
     def read_schedule(self, ts): return []
     def schedule_size(self): return 0
     def scheduled_items(self, limit=None): return []
@@ -296,7 +296,7 @@ class MemoryStorage(BaseStorage):
     def flush_queue(self):
         self._queue = []
 
-    def add_to_schedule(self, data, ts, utc):
+    def add_to_schedule(self, data, ts):
         heapq.heappush(self._schedule, (ts, data))
 
     def read_schedule(self, ts):
@@ -421,7 +421,7 @@ class RedisStorage(BaseStorage):
                 return self.conn.brpop(
                     self.queue_key,
                     timeout=self.read_timeout)[1]
-            except (ConnectionError, TypeError, IndexError):
+            except (ConnectionError, TimeoutError, TypeError, IndexError):
                 # Unfortunately, there is no way to differentiate a socket
                 # timing out and a host being unreachable.
                 return None
@@ -438,7 +438,7 @@ class RedisStorage(BaseStorage):
     def flush_queue(self):
         self.conn.delete(self.queue_key)
 
-    def add_to_schedule(self, data, ts, utc):
+    def add_to_schedule(self, data, ts):
         self.conn.zadd(self.schedule_key, {data: self.convert_ts(ts)})
 
     def read_schedule(self, ts):
@@ -575,7 +575,7 @@ class RedisPriorityQueue(object):
                 _, res, _ = self.conn.bzpopmin(
                     self.queue_key,
                     timeout=self.read_timeout)
-            except (ConnectionError, TypeError, IndexError):
+            except (ConnectionError, TimeoutError, TypeError, IndexError):
                 # Unfortunately, there is no way to differentiate a socket
                 # timing out and a host being unreachable.
                 return
@@ -753,7 +753,7 @@ class SqliteStorage(BaseSqlStorage):
     def flush_queue(self):
         self.sql('delete from task where queue=?', (self.name,), commit=True)
 
-    def add_to_schedule(self, data, ts, utc):
+    def add_to_schedule(self, data, ts):
         params = (self.name, to_blob(data), to_timestamp(ts))
         self.sql('insert into schedule (queue, data, timestamp) '
                  'values (?, ?, ?)', params, commit=True)
@@ -937,7 +937,7 @@ class FileStorage(BaseStorage):
         ts = time.mktime(ts.timetuple()) + (ts.microsecond * 1e-6)
         return '%012x' % int(ts * 1000)
 
-    def add_to_schedule(self, data, ts, utc):
+    def add_to_schedule(self, data, ts):
         with self.lock:
             if not os.path.exists(self.schedule_path):
                 os.makedirs(self.schedule_path)
