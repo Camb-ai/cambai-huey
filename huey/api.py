@@ -19,6 +19,7 @@ from huey.consumer import Consumer
 from huey.exceptions import CancelExecution
 from huey.exceptions import ConfigurationError
 from huey.exceptions import HueyException
+from huey.exceptions import ResultTimeout
 from huey.exceptions import RetryTask
 from huey.exceptions import TaskException
 from huey.exceptions import TaskLockedException
@@ -39,6 +40,7 @@ from huey.utils import reraise_as
 from huey.utils import string_type
 from huey.utils import time_clock
 from huey.utils import to_timestamp
+from huey.utils import utcnow
 
 
 logger = logging.getLogger('huey')
@@ -116,6 +118,9 @@ class Huey(object):
             self.storage_class = storage_class
         self.storage = self.create_storage()
 
+        # Allow overriding the default TaskWrapper implementation.
+        self.task_wrapper_class = self.get_task_wrapper_class()
+
         self._locks = set()
         self._pre_execute = OrderedDict()
         self._post_execute = OrderedDict()
@@ -124,6 +129,9 @@ class Huey(object):
         self._registry = Registry()
         self._signal = S.Signal()
         self._tasks_in_flight = set()
+
+    def get_task_wrapper_class(self):
+        return TaskWrapper
 
     def create_storage(self):
         # When using immediate mode, the default behavior is to use an
@@ -165,6 +173,7 @@ class Huey(object):
 
     def task(self, retries=0, retry_delay=0, priority=None, context=False,
              name=None, expires=None, **kwargs):
+        TaskWrapper = self.task_wrapper_class
         def decorator(func):
             return TaskWrapper(
                 self,
@@ -181,6 +190,7 @@ class Huey(object):
     def periodic_task(self, validate_datetime, retries=0, retry_delay=0,
                       priority=None, context=False, name=None, expires=None,
                       **kwargs):
+        TaskWrapper = self.task_wrapper_class
         def decorator(func):
             def method_validate(self, timestamp):
                 return validate_datetime(timestamp)
@@ -295,6 +305,8 @@ class Huey(object):
         if task.expires:
             task.resolve_expires(self.utc)
 
+        self._emit(S.SIGNAL_ENQUEUED, task)
+
         if self._immediate:
             self.execute(task)
         else:
@@ -343,7 +355,7 @@ class Huey(object):
         return self.storage.delete_data(key)
 
     def _get_timestamp(self):
-        return (datetime.datetime.utcnow() if self.utc else
+        return (utcnow() if self.utc else
                 datetime.datetime.now())
 
     def execute(self, task, timestamp=None):
@@ -505,11 +517,15 @@ class Huey(object):
         return ':'.join((key, self._registry.task_to_string(task_class)))
 
     def revoke_all(self, task_class, revoke_until=None, revoke_once=False):
+        if isinstance(task_class, TaskWrapper):
+            task_class = task_class.task_class
         if revoke_until is not None:
             revoke_until = normalize_time(revoke_until, utc=self.utc)
         self.put(self._task_key(task_class, 'rt'), (revoke_until, revoke_once))
 
     def restore_all(self, task_class):
+        if isinstance(task_class, TaskWrapper):
+            task_class = task_class.task_class
         return self.delete(self._task_key(task_class, 'rt'))
 
     def revoke(self, task, revoke_until=None, revoke_once=False):
@@ -554,6 +570,8 @@ class Huey(object):
             return True, False
 
     def is_revoked(self, task, timestamp=None, peek=True):
+        if isinstance(task, TaskWrapper):
+            task = task.task_class
         if inspect.isclass(task) and issubclass(task, Task):
             key = self._task_key(task, 'rt')
             is_revoked, can_restore = self._check_revoked(key, timestamp, peek)
@@ -561,7 +579,9 @@ class Huey(object):
                 self.restore_all(task)
             return is_revoked
 
-        if not isinstance(task, Task):
+        if isinstance(task, Result):
+            task = task.task
+        elif not isinstance(task, Task):
             # Assume we've been given a task ID.
             task = Task(id=task)
 
@@ -577,15 +597,22 @@ class Huey(object):
     def add_schedule(self, task):
         data = self.serialize_task(task)
         eta = task.eta or datetime.datetime.fromtimestamp(0)
-        self.storage.add_to_schedule(data, eta, self.utc)
+        self.storage.add_to_schedule(data, eta)
         logger.info('Added task %s to schedule, eta %s', task.id, eta)
         self._emit(S.SIGNAL_SCHEDULED, task)
 
     def read_schedule(self, timestamp=None):
         if timestamp is None:
             timestamp = self._get_timestamp()
-        return [self.deserialize_task(task)
-                for task in self.storage.read_schedule(timestamp)]
+        accum = []
+        for msg in self.storage.read_schedule(timestamp):
+            try:
+                task = self.deserialize_task(msg)
+            except Exception:
+                logger.exception('Unable to deserialize scheduled task.')
+            else:
+                accum.append(task)
+        return accum
 
     def read_periodic(self, timestamp):
         if timestamp is None:
@@ -617,6 +644,9 @@ class Huey(object):
 
     def result_count(self):
         return self.storage.result_store_size()
+
+    def __bool__(self):
+        return True
 
     def __len__(self):
         return self.pending_count()
@@ -897,6 +927,7 @@ class TaskLock(object):
 
     def is_locked(self):
         return self._huey.storage.has_data_for_key(self._key)
+    locked = is_locked
 
     def __call__(self, fn):
         @wraps(fn)
@@ -906,14 +937,19 @@ class TaskLock(object):
         return inner
 
     def __enter__(self):
-        if not self._huey.put_if_empty(self._key, '1'):
-            raise TaskLockedException('unable to acquire lock %s' % self._name)
+        self.acquire()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._huey.delete(self._key)
 
+    def acquire(self):
+        if not self._huey.put_if_empty(self._key, '1'):
+            raise TaskLockedException('unable to acquire lock %s' % self._name)
+        return True
+
     def clear(self):
         return self._huey.delete(self._key)
+    release = clear
 
 
 class Result(object):
@@ -942,6 +978,7 @@ class Result(object):
     def __init__(self, huey, task):
         self.huey = huey
         self.task = task
+        self.revoke_id = task.revoke_id
         self._result = EmptyData
 
     def __repr__(self):
@@ -980,7 +1017,7 @@ class Result(object):
                 if timeout and time_clock() - start >= timeout:
                     if revoke_on_timeout:
                         self.revoke()
-                    raise HueyException('timed out waiting for result')
+                    raise ResultTimeout('timed out waiting for result')
                 if delay > max_delay:
                     delay = max_delay
                 if self._get(preserve) is EmptyData:
